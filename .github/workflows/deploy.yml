@@ -65,6 +65,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
+      - name: Verify VPS host key
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+          EXPECTED_FINGERPRINT: ${{ secrets.VPS_SSH_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          keyscan_file="$(mktemp)"
+          trap 'rm -f "$keyscan_file"' EXIT
+
+          ssh-keyscan -T 10 -p "$VPS_SSH_PORT" -t ed25519,rsa,ecdsa "$VPS_HOST" > "$keyscan_file" 2>/dev/null
+          fingerprints="$(ssh-keygen -lf "$keyscan_file" | awk '{print $2}')"
+          printf 'Host fingerprints seen by this runner:\n%s\n' "$fingerprints"
+
+          if ! printf '%s\n' "$fingerprints" | grep -Fxq "$EXPECTED_FINGERPRINT"; then
+            echo "::error::VPS_SSH_FINGERPRINT does not match any host key seen by this runner."
+            exit 1
+          fi
+
       - name: Copy Compose file and frontend to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
