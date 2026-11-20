@@ -17,7 +17,7 @@ docker compose up -d --no-build --remove-orphans
 
 attempt=0
 while [ "$attempt" -lt 30 ]; do
-  if docker compose exec -T frontend wget -q -O- http://localhost/api/health | grep -q '"status":"healthy"'; then
+  if docker compose exec -T frontend wget -q -O- http://127.0.0.1/api/health | grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
     exit 0
   fi
   attempt=$((attempt + 1))
