@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Test App</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: #172033;
+      background: #f3f6fb;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 32px 16px;
+    }
+
+    main {
+      width: min(900px, 100%);
+      margin: 0 auto;
+    }
+
+    h1 { margin-bottom: 8px; }
+    h2 { margin-top: 0; font-size: 1.15rem; }
+    p { color: #566176; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin: 24px 0;
+    }
+
+    section, .output {
+      padding: 20px;
+      border: 1px solid #dce3ee;
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    button {
+      margin: 4px 4px 4px 0;
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 8px;
+      color: #fff;
+      background: #3156c9;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover { background: #2444a8; }
+
+    label {
+      display: block;
+      margin: 10px 0;
+      color: #566176;
+    }
+
+    input {
+      width: 100%;
+      margin-top: 4px;
+      padding: 9px;
+      border: 1px solid #c8d1df;
+      border-radius: 6px;
+      font: inherit;
+    }
+
+    #health-status { font-weight: 700; }
+    .healthy { color: #16803c; }
+    .unhealthy { color: #b42318; }
+
+    pre {
+      overflow-x: auto;
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Docker Test App</h1>
+    <p>Проверка состояния сервиса и тестирование API.</p>
+
+    <section aria-live="polite">
+      Статус API: <span id="health-status">проверка...</span>
+      <button id="health-button" type="button">Проверить снова</button>
+    </section>
+
+    <div class="grid">
+      <section>
+        <h2>Информация</h2>
+        <button type="button" data-api="/info">Сведения о системе</button>
+        <button type="button" data-api="/">Сведения о приложении</button>
+      </section>
+
+      <section>
+        <h2>Умножение</h2>
+        <form data-operation="multiply">
+          <label>Первое целое число
+            <input name="a" type="number" step="1" required>
+          </label>
+          <label>Второе целое число
+            <input name="b" type="number" step="1" required>
+          </label>
+          <button type="submit">Вычислить</button>
+        </form>
+      </section>
+
+      <section>
+        <h2>Деление</h2>
+        <form data-operation="divide">
+          <label>Делимое
+            <input name="a" type="number" step="1" required>
+          </label>
+          <label>Делитель
+            <input name="b" type="number" step="1" required>
+          </label>
+          <button type="submit">Вычислить</button>
+        </form>
+      </section>
+    </div>
+
+    <section class="output" aria-live="polite">
+      <h2>Ответ API</h2>
+      <pre id="api-output">Выберите действие.</pre>
+    </section>
+  </main>
+
+  <script>
+    const API_BASE = '/api';
+    const output = document.getElementById('api-output');
+    const healthStatus = document.getElementById('health-status');
+
+    async function requestApi(path) {
+      const response = await fetch(`${API_BASE}${path}`);
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `Ошибка HTTP ${response.status}`);
+      }
+      return data;
+    }
+
+    function showResult(data) {
+      output.textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function checkHealth() {
+      healthStatus.textContent = 'проверка...';
+      healthStatus.className = '';
+      try {
+        const data = await requestApi('/health');
+        healthStatus.textContent = data.status === 'healthy' ? 'работает' : data.status;
+        healthStatus.className = data.status === 'healthy' ? 'healthy' : 'unhealthy';
+      } catch (error) {
+        healthStatus.textContent = 'недоступен';
+        healthStatus.className = 'unhealthy';
+        showResult({ error: error.message });
+      }
+    }
+
+    document.getElementById('health-button').addEventListener('click', checkHealth);
+
+    document.querySelectorAll('[data-api]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        try {
+          showResult(await requestApi(button.dataset.api));
+        } catch (error) {
+          showResult({ error: error.message });
+        }
+      });
+    });
+
+    document.querySelectorAll('form[data-operation]').forEach((form) => {
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const values = new FormData(form);
+        const a = encodeURIComponent(values.get('a'));
+        const b = encodeURIComponent(values.get('b'));
+        const operation = form.dataset.operation;
+        try {
+          showResult(await requestApi(`/${operation}/${a}/${b}`));
+        } catch (error) {
+          showResult({ error: error.message });
+        }
+      });
+    });
+
+    checkHealth();
+  </script>
+</body>
+</html>
