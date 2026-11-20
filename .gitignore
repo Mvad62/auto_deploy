@@ -30,3 +30,4 @@ ENV/
 # Operating system files
 .DS_Store
 Thumbs.db
+Github secrets.txt
