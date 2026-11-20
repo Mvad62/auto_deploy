@@ -65,80 +65,69 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Verify VPS host key
+      - name: Prepare SSH key and verify VPS host key
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
-          EXPECTED_FINGERPRINT: ${{ secrets.VPS_SSH_FINGERPRINT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_FINGERPRINT: ${{ secrets.VPS_SSH_FINGERPRINT }}
         run: |
           set -euo pipefail
-          keyscan_file="$(mktemp)"
-          trap 'rm -f "$keyscan_file"' EXIT
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
 
-          ssh-keyscan -T 10 -p "$VPS_SSH_PORT" -t ed25519,rsa,ecdsa "$VPS_HOST" > "$keyscan_file" 2>/dev/null
-          fingerprints="$(ssh-keygen -lf "$keyscan_file" | awk '{print $2}')"
-          printf 'Host fingerprints seen by this runner:\n%s\n' "$fingerprints"
-
-          if ! printf '%s\n' "$fingerprints" | grep -Fxq "$EXPECTED_FINGERPRINT"; then
-            echo "::error::VPS_SSH_FINGERPRINT does not match any host key seen by this runner."
+          if ! ssh-keyscan -T 10 -p "$VPS_SSH_PORT" -t ed25519 "$VPS_HOST" > "$HOME/.ssh/known_hosts" 2>/dev/null; then
+            echo "::error::Could not scan the VPS Ed25519 host key."
+            exit 1
+          fi
+          if [[ ! -s "$HOME/.ssh/known_hosts" ]]; then
+            echo "::error::Could not retrieve the VPS Ed25519 host key."
             exit 1
           fi
 
-      - name: Copy Compose file and frontend to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_SSH_PORT || '22' }}
-          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
-          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
-          source: docker-compose.yml,frontend
-          target: /opt/auto-deploy
-          overwrite: true
+          actual_fingerprint="$(ssh-keygen -lf "$HOME/.ssh/known_hosts" -E sha256 | awk 'NR == 1 {print $2}')"
+          if [[ "$actual_fingerprint" != "$VPS_SSH_FINGERPRINT" ]]; then
+            echo "::error::The VPS Ed25519 host key does not match VPS_SSH_FINGERPRINT. Received: $actual_fingerprint"
+            exit 1
+          fi
+          chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Pull image and restart application
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Copy files and deploy over SSH
         env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
+          VPS_SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ${{ needs.build-and-push.outputs.image }}
           FRONTEND_PORT: "8081"
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_SSH_PORT || '22' }}
-          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
-          passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
-          envs: GHCR_USER,GHCR_TOKEN,IMAGE,FRONTEND_PORT
-          script: |
-            set -eu
-            cd /opt/auto-deploy
+        run: |
+          set -euo pipefail
+          ssh_key="$HOME/.ssh/deploy_key"
+          known_hosts="$HOME/.ssh/known_hosts"
 
-            docker_config="$(mktemp -d)"
-            export DOCKER_CONFIG="$docker_config"
-            cleanup() {
-              docker logout ghcr.io >/dev/null 2>&1 || true
-              rm -rf "$docker_config"
-            }
-            trap cleanup EXIT
+          scp -i "$ssh_key" -P "$VPS_SSH_PORT" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known_hosts" \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            -r docker-compose.yml frontend deploy-vps.sh \
+            "$VPS_USERNAME@$VPS_HOST:/opt/auto-deploy/"
 
-            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-            export BACKEND_IMAGE="$IMAGE"
-            export FRONTEND_PORT
-            docker compose pull backend
-            docker compose up -d --no-build --remove-orphans
+          {
+            printf 'export GHCR_USER=%q\n' "$GHCR_USER"
+            printf 'export GHCR_TOKEN=%q\n' "$GHCR_TOKEN"
+            printf 'export BACKEND_IMAGE=%q\n' "$IMAGE"
+            printf 'export FRONTEND_PORT=%q\n' "$FRONTEND_PORT"
+            printf '%s\n' 'exec bash /opt/auto-deploy/deploy-vps.sh'
+          } | ssh -i "$ssh_key" -p "$VPS_SSH_PORT" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$known_hosts" \
+            -o HostKeyAlgorithms=ssh-ed25519 \
+            "$VPS_USERNAME@$VPS_HOST" 'bash -s'
 
-            attempt=0
-            while [ "$attempt" -lt 30 ]; do
-              if docker compose exec -T frontend wget -q -O- http://localhost/api/health | grep -q '"status":"healthy"'; then
-                exit 0
-              fi
-              attempt=$((attempt + 1))
-              sleep 2
-            done
-
-            docker compose ps
-            docker compose logs --tail=100
-            exit 1
+      - name: Remove temporary SSH credentials
+        if: always()
+        run: rm -f "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
